@@ -17,6 +17,9 @@ static NSString * const SFYPlayerDockIconPreferenceKey = @"YES";
 @property (nonatomic, strong) NSMenuItem *playerStateMenuItem;
 @property (nonatomic, strong) NSMenuItem *dockIconMenuItem;
 @property (nonatomic, strong) NSStatusItem *statusItem;
+@property int firstPaused;
+@property int lastNotified;
+@property int timesNotified;
 
 @end
 
@@ -27,8 +30,12 @@ static NSString * const SFYPlayerDockIconPreferenceKey = @"YES";
     //Initialize the variable the getDockIconVisibility method checks
     [[NSUserDefaults standardUserDefaults] setBool:YES forKey:SFYPlayerDockIconPreferenceKey];
     
+    // Default to hidden dock icon
+    [NSApp setActivationPolicy: NSApplicationActivationPolicyAccessory];
+    
+    
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.highlightMode = YES;
+    self.statusItem.highlightMode = NO;
     
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
     
@@ -42,6 +49,10 @@ static NSString * const SFYPlayerDockIconPreferenceKey = @"YES";
 
     [self.statusItem setMenu:menu];
     
+    self.firstPaused = 0;
+    self.lastNotified = 0;
+    self.timesNotified = 0;
+    
     [self setStatusItemTitle];
     [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(setStatusItemTitle) userInfo:nil repeats:YES];
 }
@@ -54,15 +65,30 @@ static NSString * const SFYPlayerDockIconPreferenceKey = @"YES";
     NSString *artistName = [[self executeAppleScript:@"get artist of current track"] stringValue];
     
     if (trackName && artistName) {
-        NSString *titleText = [NSString stringWithFormat:@"%@ - %@", trackName, artistName];
+        NSString *titleText = [NSString stringWithFormat:@"%@ %@", trackName, artistName];
+        
+        NSRange range = [titleText rangeOfString:artistName];
+        NSColor *color = [NSColor colorWithWhite:0.5 alpha:1.0];
+        NSDictionary *defaultAttributes = [NSDictionary
+                                           dictionaryWithObjectsAndKeys:
+                                           [NSColor colorWithWhite:0.0 alpha:1.0],NSForegroundColorAttributeName,
+                                           [NSFont menuBarFontOfSize:11], NSFontAttributeName,
+                                           nil];
+        
+        NSMutableAttributedString *attString = [[NSMutableAttributedString alloc] initWithString:titleText attributes:defaultAttributes];
+        
+        [attString addAttribute:NSForegroundColorAttributeName value:color range:range];
         
         if ([self getPlayerStateVisibility]) {
-            NSString *playerState = [self determinePlayerStateText];
-            titleText = [NSString stringWithFormat:@"%@ (%@)", titleText, playerState];
+            NSString *formattedString = [NSString stringWithFormat:@" %@", [self determinePlayerStateText]];
+            NSAttributedString *playerState = [[NSAttributedString alloc] initWithString:formattedString attributes:defaultAttributes];
+            [attString appendAttributedString:playerState];
         }
         
+        
         self.statusItem.image = nil;
-        self.statusItem.title = titleText;
+        [self.statusItem setAttributedTitle:attString];
+        self.statusItem.button.frame = CGRectMake(0.0, -1.5, self.statusItem.button.frame.size.width, self.statusItem.button.frame.size.height);
     }
     else {
         NSImage *image = [NSImage imageNamed:@"status_icon"];
@@ -111,17 +137,64 @@ static NSString * const SFYPlayerDockIconPreferenceKey = @"YES";
     NSString *playerStateConstant = [[self executeAppleScript:@"get player state"] stringValue];
     
     if ([playerStateConstant isEqualToString:@"kPSP"]) {
-        playerStateText = NSLocalizedString(@"Playing", nil);
+        self.firstPaused = 0;
+        self.lastNotified = 0;
+        self.timesNotified = 0;
+        playerStateText = NSLocalizedString(@"▶️", nil);
     }
     else if ([playerStateConstant isEqualToString:@"kPSp"]) {
-        playerStateText = NSLocalizedString(@"Paused", nil);
+        
+        int timeInSeconds = floor(CFAbsoluteTimeGetCurrent());
+        
+        if(self.firstPaused == 0) {
+            self.firstPaused = timeInSeconds;
+        } else {
+            int secondsPassed = timeInSeconds - self.firstPaused;
+            
+            if(secondsPassed > 60) {
+                int secondsPassedNotification = timeInSeconds - self.lastNotified;
+                
+                if(self.lastNotified == 0)
+                {
+                    self.lastNotified = timeInSeconds;
+                    self.timesNotified = self.timesNotified + 1;
+                    [self showNotification];
+                } else {
+                    if(secondsPassedNotification > 300 * self.timesNotified) {
+                        self.lastNotified = timeInSeconds;
+                        self.timesNotified = self.timesNotified + 1;
+                        [self showNotification];
+                    }
+                }
+            }
+        }
+        
+        playerStateText = NSLocalizedString(@"⏸", nil);
     }
     else {
-        playerStateText = NSLocalizedString(@"Stopped", nil);
+        playerStateText = NSLocalizedString(@"⏹", nil);
     }
     
     return playerStateText;
 }
+
+- (void)showNotification
+{
+    //Initalize new notification
+    NSUserNotification *notification = [[NSUserNotification alloc] init];
+    //Set the title of the notification
+    [notification setTitle:@"Spotify is paused"];
+    //Set the text of the notification
+    [notification setInformativeText:@"You haven't been listening to music for a while.."];
+    //Set the sound, this can be either nil for no sound, NSUserNotificationDefaultSoundName for the default sound (tri-tone) and a string of a .caf file that is in the bundle (filname and extension)
+    [notification setSoundName:nil];
+    
+    //Get the default notification center
+    NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];
+    //Scheldule our NSUserNotification
+    [center scheduleNotification:notification];
+}
+
 
 #pragma mark - Toggle Dock Icon
 
